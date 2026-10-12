@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rinthdown"
+version = "0.1.0"
+description = "A command-line Modrinth mod and modpack downloader"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Aintmee" }
+]
+keywords = ["modrinth", "minecraft", "modpack", "downloader"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities"
+]
+dependencies = [
+    "requests",
+    "questionary",
+    "tqdm"
+]
+
+[project.scripts]
+rinthdown = "rinthdown.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Aintdev/rinthdown"
+Issues = "https://github.com/Aintdev/rinthdown/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rinthdown"]
