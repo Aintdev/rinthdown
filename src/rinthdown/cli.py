@@ -20,7 +20,11 @@ from importlib.metadata import PackageNotFoundError, version
 
 MAX_RETRIES = 4
 DEBUG_ON = False
+session = requests.session()
 
+session.headers.update({
+    "User-Agent": f"Aintdev/rinthdown/{version("rinthdown")}"
+})
 
 def get_thread_count() -> int:
     cpu = os.cpu_count() or 1
@@ -155,7 +159,7 @@ class ModrinthPack:
         in_memory_zip = BytesIO()
 
         try:
-            with requests.get(
+            with session.get(
                 self.parse.geturl(),
                 stream=True,
                 timeout=10,
@@ -317,7 +321,7 @@ class RinthDown:
             "mc/game/version_manifest_v2.json"
         )
 
-        response = requests.get(url, timeout=10)
+        response = session.get(url, timeout=10)
         response.raise_for_status()
 
         return [
@@ -361,7 +365,7 @@ class RinthDown:
     def calculate_loader(self):
         url = "https://api.modrinth.com/v2/tag/loader"
 
-        response = requests.get(url, timeout=10)
+        response = session.get(url, timeout=10)
 
         logger.debug("API CALL: " + url)
         response.raise_for_status()
@@ -540,7 +544,7 @@ class RinthDown:
                 )
 
             try:
-                with requests.get(
+                with session.get(
                     url, stream=True, timeout=(10, 10)
                 ) as response:
                     response.raise_for_status()
@@ -742,7 +746,7 @@ class RinthDown:
         }
 
         for attempt in range(MAX_RETRIES):
-            response = requests.get(
+            response = session.get(
                 url,
                 params=params,
                 timeout=10,
@@ -1058,7 +1062,7 @@ class RinthDown:
                 )
 
                 if self._server and Path(relative).parts[0] not in (
-                    "mods", "datapacks"
+                    "mods", "datapacks", "config"
                 ):
                     continue
 
@@ -1239,7 +1243,7 @@ def main():
     except RinthDownInterrupt:
         logger.info("Aborting.")
 
-    except RinthDownError as e:
+    except (RinthDownError, ModrinthPackError) as e:
         message = str(e)
 
         if message == "A fatal error has occured.":
