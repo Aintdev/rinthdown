@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+a[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+b[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+rc[0-9]+"
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_NAME: rinthdown
+
+jobs:
+  details:
+    name: Extract release details
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.release.outputs.new_version }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Extract tag
+        id: release
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+(a[0-9]+|b[0-9]+|rc[0-9]+)?$ ]]; then
+            echo "Invalid release tag: $TAG_NAME"
+            exit 1
+          fi
+
+          echo "new_version=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+          echo "Release version: $TAG_NAME"
+
+  check_pypi:
+    name: Check PyPI version
+    needs: details
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Compare versions
+        env:
+          NEW_VERSION: ${{ needs.details.outputs.new_version }}
+          PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          python -m pip install packaging
+
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from packaging.version import InvalidVersion, Version
+
+          package = os.environ["PACKAGE_NAME"]
+          new_version = Version(os.environ["NEW_VERSION"])
+          url = f"https://pypi.org/pypi/{package}/json"
+
+          try:
+              with urllib.request.urlopen(url, timeout=20) as response:
+                  data = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              data = None
+
+          if data is None:
+              print(f"{package} does not exist on PyPI yet.")
+              raise SystemExit(0)
+
+          versions = []
+          for version in data.get("releases", {}):
+              try:
+                  versions.append(Version(version))
+              except InvalidVersion:
+                  continue
+
+          if not versions:
+              print("No valid previous versions found on PyPI.")
+              raise SystemExit(0)
+
+          latest = max(versions)
+
+          print(f"Latest version on PyPI: {latest}")
+          print(f"New release version: {new_version}")
+
+          if new_version <= latest:
+              raise SystemExit(
+                  f"Release {new_version} must be newer than {latest}."
+              )
+
+          print("Version check passed.")
+          PY
+
+  setup_and_build:
+    name: Build distributions
+    needs: [details, check_pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: |
+          python -m pip install poetry
+
+      - name: Set project version
+        env:
+          NEW_VERSION: ${{ needs.details.outputs.new_version }}
+        run: |
+          poetry version "$NEW_VERSION"
+
+      - name: Install dependencies
+        run: poetry install --sync --no-interaction
+
+      - name: Build distributions
+        run: poetry build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  pypi_publish:
+    name: Publish to PyPI
+    needs: [details, setup_and_build]
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://pypi.org/project/rinthdown/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  github_release:
+    name: Create GitHub Release
+    needs: [details, setup_and_build, pypi_publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.details.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          gh release create "$TAG_NAME" dist/* \
+            --title "$TAG_NAME" \
+            --generate-notes
