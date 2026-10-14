@@ -1,4 +1,3 @@
-
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import requests
@@ -16,15 +15,26 @@ from zipfile import ZipFile, BadZipFile
 from urllib.parse import urlparse, ParseResult
 from io import BytesIO
 from pathlib import Path
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 
 MAX_RETRIES = 4
-DEBUG_ON = False
-session = requests.session()
 
+
+def get_app_version() -> str:
+    try:
+        return pkg_version("rinthdown")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+APP_VERSION = get_app_version()
+
+session = requests.Session()
 session.headers.update({
-    "User-Agent": f"Aintdev/rinthdown/{version("rinthdown")}"
+    "User-Agent": f"Aintdev/rinthdown/{APP_VERSION}"
 })
+
 
 def get_thread_count() -> int:
     cpu = os.cpu_count() or 1
@@ -250,7 +260,6 @@ class RinthDown:
         self._cancel_event = threading.Event()
         self._had_errors = False
 
-    
     @staticmethod
     def safe_destination(root: Path, relative_path: str) -> Path:
         """Resolve a relative path without allowing directory traversal."""
@@ -325,9 +334,9 @@ class RinthDown:
         response.raise_for_status()
 
         return [
-            version["id"]
-            for version in response.json()["versions"]
-            if version["type"] == "release"
+            entry["id"]
+            for entry in response.json()["versions"]
+            if entry["type"] == "release"
         ]
 
     def calculate_projects(self):
@@ -340,7 +349,7 @@ class RinthDown:
 
         projects = projects.split(", ")
         self._projects = [
-            [project, None]
+            (project, None)
             for project in projects
             if project
         ]
@@ -357,10 +366,12 @@ class RinthDown:
     def calculate_pack(self):
         self._pack = questionary.path(
             "Pack [name/path/download url]: "
-        ).ask().strip("\"")
+        ).ask()
 
         if self._pack is None:
             raise KeyboardInterrupt
+
+        self._pack = self._pack.strip("\"")
 
     def calculate_loader(self):
         url = "https://api.modrinth.com/v2/tag/loader"
@@ -390,11 +401,11 @@ class RinthDown:
         latest_stable = None
         latest_overall = None
 
-        for version in versions:
+        for entry in versions:
             try:
                 if (
                     self._server
-                    and version["environment"] == "client_only"
+                    and entry["environment"] == "client_only"
                 ):
                     continue
             except KeyError:
@@ -404,22 +415,22 @@ class RinthDown:
                 )
                 return None
 
-            raw_version_choices.append(version)
+            raw_version_choices.append(entry)
 
             if not latest_overall:
                 if self._latest:
-                    return version
+                    return entry
 
-                latest_overall = version.copy()
+                latest_overall = entry.copy()
 
             if (
                 not latest_stable
-                and version["version_type"] == "release"
+                and entry["version_type"] == "release"
             ):
                 if self._stable:
-                    return version
+                    return entry
 
-                latest_stable = version.copy()
+                latest_stable = entry.copy()
 
         if not raw_version_choices:
             if self._server:
@@ -487,7 +498,6 @@ class RinthDown:
         if self._pack is True and flags & 0b1000:
             self.calculate_pack()
 
-    
     def download(
         self,
         url,
@@ -495,6 +505,7 @@ class RinthDown:
         broad=False,
         quiet=False,
         expected_hashes=None,
+        record_error=True,
         _attempt=0,
     ):
         if self._cancel_event.is_set():
@@ -520,7 +531,7 @@ class RinthDown:
 
                 if valid and not expected_hashes:
                     try:
-                        head = requests.head(
+                        head = session.head(
                             url, timeout=10, allow_redirects=True
                         )
                         remote_size = int(
@@ -621,7 +632,8 @@ class RinthDown:
             )
 
             if _attempt + 1 >= MAX_RETRIES or quiet:
-                self._had_errors = True
+                if record_error:
+                    self._had_errors = True
                 return False
 
             retry = questionary.confirm(
@@ -633,7 +645,8 @@ class RinthDown:
                 raise KeyboardInterrupt
 
             if not retry:
-                self._had_errors = True
+                if record_error:
+                    self._had_errors = True
                 return False
 
             return self.download(
@@ -642,8 +655,36 @@ class RinthDown:
                 broad=broad,
                 quiet=quiet,
                 expected_hashes=expected_hashes,
+                record_error=record_error,
                 _attempt=_attempt + 1,
             )
+
+    def download_any(
+        self,
+        urls,
+        filename,
+        expected_hashes=None,
+        record_error=True,
+    ):
+        for url in urls:
+            if self._cancel_event.is_set():
+                return False
+
+            if self.download(
+                url,
+                filename,
+                broad=True,
+                quiet=True,
+                expected_hashes=expected_hashes,
+                record_error=False,
+            ):
+                return True
+
+            logger.warning(f"Mirror failed for {filename}: {url}")
+
+        if record_error:
+            self._had_errors = True
+        return False
 
     def add_dependencies(self, choice):
         for dependency in choice["dependencies"]:
@@ -717,7 +758,7 @@ class RinthDown:
             "algorithm": "sha512",
         }
 
-        response = requests.post(
+        response = session.post(
             url,
             json=payload,
             timeout=10,
@@ -805,11 +846,11 @@ class RinthDown:
 
         if project[1]:
             versions = [
-                version
-                for version in versions
+                entry
+                for entry in versions
                 if project[1] in (
-                    version["version_number"],
-                    version["id"],
+                    entry["version_number"],
+                    entry["id"],
                 )
             ]
 
@@ -868,7 +909,6 @@ class RinthDown:
             )
             return
 
-        
         success = self.download(
             choice["files"][0]["url"],
             choice["files"][0]["filename"],
@@ -881,7 +921,6 @@ class RinthDown:
         else:
             self._had_errors = True
 
-    
     def mrpack_run(self):
         self.ensure_data(0b1000)
 
@@ -983,56 +1022,95 @@ class RinthDown:
                         parents=True, exist_ok=True
                     )
 
-                    for download_url in downloads:
-                        if self._cancel_event.is_set():
-                            break
+                    # Mirrors are fallbacks, not parallel sources:
+                    # validate all of them, then submit ONE future per file.
+                    urls = []
 
+                    for download_url in downloads:
                         if not isinstance(download_url, str):
                             raise ModrinthPackError(
                                 "Invalid download URL in modpack index."
                             )
 
-                        parsed_url = urlparse(download_url)
-                        if parsed_url.scheme not in ("http", "https"):
+                        if urlparse(download_url).scheme not in (
+                            "http", "https"
+                        ):
                             raise ModrinthPackError(
                                 "Invalid download URL scheme in modpack index."
                             )
 
-                        futures.append(
-                            executor.submit(
-                                self.download,
-                                download_url,
-                                relative_path,
-                                broad=True,
-                                quiet=True,
-                                expected_hashes=hashes,
-                            )
-                        )
+                        urls.append(download_url)
 
-                successful = True
+                    # First pass: don't record errors yet, the retry pass decides.
+                    futures.append((
+                        executor.submit(
+                            self.download_any,
+                            urls,
+                            relative_path,
+                            hashes,
+                            False,
+                        ),
+                        urls,
+                        relative_path,
+                        hashes,
+                    ))
 
-                for future in futures:
+                retry_list = []
+
+                for future, urls, relative_path, hashes in futures:
                     if self._cancel_event.is_set():
-                        successful = False
                         break
 
                     try:
-                        if not future.result():
-                            successful = False
+                        ok = future.result()
                     except Exception:
                         logger.exception("A download worker failed.")
-                        successful = False
+                        ok = False
 
-                if not successful:
-                    self._cancel_event.set()
-                    executor.shutdown(
-                        wait=True, cancel_futures=True
+                    if not ok:
+                        retry_list.append((urls, relative_path, hashes))
+
+                if retry_list and not self._cancel_event.is_set():
+                    logger.warning(
+                        f"Retrying {len(retry_list)} failed download(s)..."
                     )
-                    logger.error(
-                        "One or more downloads failed. "
-                        "Overrides will not be copied."
-                    )
-                    return 1
+                    time.sleep(2)  # small backoff
+
+                    retry_futures = [
+                        (
+                            executor.submit(
+                                self.download_any,
+                                urls,
+                                path,
+                                hashes,
+                                True,
+                            ),
+                            path,
+                        )
+                        for urls, path, hashes in retry_list
+                    ]
+
+                    still_failed = []
+
+                    for future, path in retry_futures:
+                        try:
+                            if not future.result():
+                                still_failed.append(path)
+                        except Exception:
+                            logger.exception("A download worker failed.")
+                            still_failed.append(path)
+
+                    if still_failed:
+                        self._cancel_event.set()
+                        executor.shutdown(
+                            wait=True, cancel_futures=True
+                        )
+                        logger.error(
+                            "Failed even after retry: "
+                            + ", ".join(still_failed)
+                        )
+                        logger.error("Overrides will not be copied.")
+                        return 1
 
             except BaseException:
                 self._cancel_event.set()
@@ -1096,8 +1174,6 @@ class RinthDown:
             if pack is not None and pack.zip is not None:
                 pack.zip.close()
 
-
-    
     def run_all(self):
         self.init_installed()
 
@@ -1125,9 +1201,11 @@ class RinthDown:
         logger.info("Exiting.")
         return 1 if self._had_errors else 0
 
+
 def parse_project(arg: str) -> tuple[str, str | None]:
     if "@" in arg:
-        return tuple(arg.split("@", 1))
+        name, ver = arg.split("@", 1)
+        return (name, ver)
 
     return (arg, None)
 
@@ -1199,15 +1277,10 @@ def get_args():
         action="store_true",
     )
 
-    try:
-        app_version = version("rinthdown")
-    except PackageNotFoundError:
-        app_version = "unknown"
-
     parent_parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {app_version}",
+        version=f"%(prog)s {APP_VERSION}",
     )
 
     args = parent_parser.parse_args()
@@ -1221,7 +1294,7 @@ def get_args():
     if not args.isclient and not args.isserver:
         args.isserver = True
 
-    logger.level = (
+    logger.setLevel(
         logging.DEBUG
         if args.verbose
         else logging.INFO
