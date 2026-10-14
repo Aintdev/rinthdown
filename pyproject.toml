@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "Aintmee" }
+    { name = "Aintdev" }
 ]
 keywords = ["modrinth", "minecraft", "modpack", "downloader"]
 classifiers = [
